@@ -166,17 +166,21 @@ Ok "Node $nodeV"
 
 $pyExe = $null
 foreach ($cand in @("python", "py")) {
-  try {
-    $v = (& $cand --version 2>&1) -join ""
-    if ($v -match "Python (\d+)\.(\d+)") {
-      if ([int]$Matches[1] -ge 3 -and [int]$Matches[2] -ge 10) {
-        $pyExe = (Get-Command $cand -ErrorAction SilentlyContinue).Source
-        if ($cand -eq "py") { $pyExe = (& py -c "import sys; print(sys.executable)" 2>$null).Trim() }
+  # cmd 로 감싼다 — 네이티브 exe 의 stderr 를 PowerShell 스트림으로 끌어오면
+  # NativeCommandError 가 발생할 수 있다 (7-1 주석 참조).
+  $v = (& cmd /c "$cand --version 2>&1") -join ""
+  if ($v -match "Python (\d+)\.(\d+)") {
+    if ([int]$Matches[1] -ge 3 -and [int]$Matches[2] -ge 10) {
+      $exe = (& cmd /c "$cand -c `"import sys; print(sys.executable)`" 2>nul") -join ""
+      if ($exe -and (Test-Path $exe.Trim())) {
+        $pyExe = $exe.Trim()
         Ok "Python $($Matches[1]).$($Matches[2]) — $pyExe"
         break
       }
+    } else {
+      Warn "$cand → Python $($Matches[1]).$($Matches[2]) (3.10 미만, 건너뜀)"
     }
-  } catch { }
+  }
 }
 if (-not $pyExe) {
   Die "1-전제점검" "Python 3.10 이상을 찾지 못했습니다." @("https://www.python.org/downloads/ 에서 설치하세요.", "설치 시 'Add python.exe to PATH' 를 반드시 체크하세요.")
@@ -337,13 +341,18 @@ Step "자가검증 (버전 / 서버 기동 / GV-1 라운드트립)"
 if ($SkipVerify) { Warn "-SkipVerify 지정 — 자가검증을 건너뜁니다"; }
 else {
   # 7-1. llama-server --version
-  $sv = (& $serverExe --version 2>&1) -join " "
+  # 주의: llama-server 는 버전을 stderr 로 낸다. PowerShell 5.1 에서 네이티브 exe 의
+  # stderr 를 `2>&1` 로 받으면 각 줄이 ErrorRecord 로 감싸여 NativeCommandError 가 되고,
+  # $ErrorActionPreference='Stop' 과 만나 스크립트가 죽는다. cmd 가 리다이렉션을
+  # 처리하도록 감싸서 이 함정을 피한다.
+  $sv = (& cmd /c "`"$serverExe`" --version 2>&1") -join " "
   if ($sv -notmatch "version:\s*(\d+)") { Die "7-자가검증" "llama-server --version 응답이 이상합니다: $sv" @("runtime\ 을 지우고 setup.ps1 -Force 로 다시 실행하세요.") }
   Ok "llama-server $($Matches[0])"
 
   # 7-2. 서버 기동 스모크
   Info "서버 기동 스모크 (chat 8090 + embed 8091) — 20초 내외"
-  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $REPO "scripts\serve_models.ps1") | Out-Null
+  # 자식 PowerShell 로 띄운다. 여기서도 stderr 를 PowerShell 스트림으로 끌어오지 않는다.
+  & cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $REPO 'scripts\serve_models.ps1')`" >nul 2>&1"
   if ($LASTEXITCODE -ne 0) {
     Die "7-자가검증" "서버 기동에 실패했습니다." @(
       "logs\chat-*.err.log 와 logs\embed-*.err.log 를 확인하세요.",
@@ -372,7 +381,8 @@ else {
 
   # 7-3. GV-1 라운드트립 (kordoc 변환 정확성 골든 벡터)
   Info "GV-1 라운드트립 실행 (kordoc 표 셀 값 100% 일치 검증)"
-  & node (Join-Path $REPO "scripts\golden_roundtrip.mjs") | ForEach-Object { Write-Host "        $_" }
+  $gv1 = & cmd /c "node `"$(Join-Path $REPO 'scripts\golden_roundtrip.mjs')`" 2>&1"
+  $gv1 | ForEach-Object { Write-Host "        $_" }
   if ($LASTEXITCODE -ne 0) { Die "7-자가검증" "GV-1 라운드트립 실패 (exit=$LASTEXITCODE)" @("logs\gv1\gv1-report.json 을 확인하세요.") }
   Ok "GV-1 PASS"
 }
