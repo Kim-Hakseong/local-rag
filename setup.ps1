@@ -156,7 +156,9 @@ Write-Host "  저장소: $REPO"
 Step "전제 점검 (Node / Python / 디스크)"
 
 $nodeV = $null
-try { $nodeV = (& node --version 2>$null).Trim() } catch { }
+# 리다이렉션은 반드시 cmd 안에서 (`2>nul`). PowerShell 쪽 `2>$null` 을 쓰면
+# 네이티브 명령의 stderr 가 ErrorRecord 로 승격돼 NativeCommandError 가 된다 (BB-1).
+$nodeV = ((& cmd /c "node --version 2>nul") -join "").Trim()
 if (-not $nodeV) {
   Die "1-전제점검" "Node.js 가 없습니다." @("https://nodejs.org 에서 LTS 를 설치하세요 (18 이상).", "설치 후 새 PowerShell 창에서 setup.ps1 을 다시 실행하세요.")
 }
@@ -196,22 +198,50 @@ Ok "디스크 여유 ${freeGB} GB (드라이브 $($drive.Name):)"
 # ═══ 2. kordoc 설치 ══════════════════════════════════════════════════════
 Step "kordoc 설치 (문서 → 마크다운 변환기)"
 
-$kordocCmd = $null
-$whereOut = & cmd /c "where kordoc" 2>$null
-if ($LASTEXITCODE -eq 0) { $kordocCmd = ($whereOut | Where-Object { $_ -like "*.cmd" } | Select-Object -First 1) }
+# BB-1: 아래 호출들은 전부 리다이렉션을 **cmd 안에서**(`2>nul`) 처리한다.
+# PowerShell 쪽 `2>$null` 을 쓰면 네이티브 명령이 stderr 를 낼 때 각 줄이 ErrorRecord 로
+# 승격돼 NativeCommandError 가 되고, $ErrorActionPreference='Stop' 과 만나 스크립트가 죽는다.
+#   - `where kordoc` 는 **못 찾으면 stderr 를 낸다** → 미설치 환경에서 정확히 여기서 죽었다.
+#   - `npm install` 도 진행 상황·경고를 stderr 로 낸다 → 같은 함정.
+function Find-KordocCmd {
+  $out = & cmd /c "where kordoc 2>nul"
+  if ($LASTEXITCODE -ne 0) { return $null }
+  return ($out | Where-Object { $_ -like "*.cmd" } | Select-Object -First 1)
+}
+function Get-KordocVersion([string]$cmdPath) {
+  return ((& cmd /c "`"$cmdPath`" --version 2>nul") | Where-Object { $_ } | Select-Object -First 1)
+}
+
+$kordocCmd = Find-KordocCmd
 
 if ($kordocCmd -and (Test-Path $kordocCmd)) {
-  $ver = (& cmd /c "`"$kordocCmd`" --version" 2>$null | Select-Object -First 1)
-  Ok "kordoc 이미 설치됨 (v$ver) — $kordocCmd"
+  Ok "kordoc 이미 설치됨 (v$(Get-KordocVersion $kordocCmd)) — $kordocCmd"
 } else {
-  Info "npm install -g kordoc (1분 내외)"
-  & cmd /c "npm install -g kordoc" 2>&1 | ForEach-Object { if ($_ -match "added|updated|error|ERR") { Write-Host "        $_" } }
-  $whereOut = & cmd /c "where kordoc" 2>$null
-  if ($LASTEXITCODE -ne 0) { Die "2-kordoc" "설치 후에도 kordoc 을 찾을 수 없습니다." @("PowerShell 을 새로 열고 다시 실행하세요 (PATH 갱신 필요).", "수동 확인: npm install -g kordoc") }
-  $kordocCmd = ($whereOut | Where-Object { $_ -like "*.cmd" } | Select-Object -First 1)
-  if (-not $kordocCmd) { Die "2-kordoc" "kordoc.cmd 절대경로를 찾지 못했습니다." @("where kordoc 결과: $($whereOut -join ', ')") }
-  $ver = (& cmd /c "`"$kordocCmd`" --version" 2>$null | Select-Object -First 1)
-  Ok "kordoc v$ver 설치 완료 — $kordocCmd"
+  Info "kordoc 미설치 — npm install -g kordoc (1분 내외)"
+  $npmLog = Join-Path $DL "npm-install-kordoc.log"
+  New-Item -ItemType Directory -Force $DL | Out-Null
+  # stdout/stderr 를 모두 cmd 안에서 파일로 보낸다. PowerShell 스트림을 거치지 않는다.
+  & cmd /c "npm install -g kordoc > `"$npmLog`" 2>&1"
+  $npmExit = $LASTEXITCODE
+  if (Test-Path $npmLog) {
+    Get-Content $npmLog | Where-Object { $_ -match "added|changed|updated|ERR!|error" } |
+      Select-Object -First 8 | ForEach-Object { Write-Host "        $_" }
+  }
+  if ($npmExit -ne 0) {
+    Die "2-kordoc" "npm install -g kordoc 실패 (exit=$npmExit)" @(
+      "전체 로그: $npmLog",
+      "사내 프록시 환경이면 npm config set proxy / https-proxy 설정이 필요할 수 있습니다.",
+      "Node 를 방금 설치했다면 PowerShell 을 새로 열고 다시 실행하세요."
+    )
+  }
+  $kordocCmd = Find-KordocCmd
+  if (-not $kordocCmd) {
+    Die "2-kordoc" "설치는 끝났으나 kordoc 을 PATH 에서 찾을 수 없습니다." @(
+      "PowerShell 을 새로 열고 setup.ps1 을 다시 실행하세요 (PATH 갱신 필요).",
+      "전체 로그: $npmLog"
+    )
+  }
+  Ok "kordoc v$(Get-KordocVersion $kordocCmd) 설치 완료 — $kordocCmd"
 }
 
 # ═══ 3. GPU 감지 ═════════════════════════════════════════════════════════
@@ -399,17 +429,28 @@ else {
   Ok "llama-server $($Matches[0])"
 
   # 7-2. 서버 기동 스모크
-  Info "서버 기동 스모크 (chat 8090 + embed 8091) — 20초 내외"
-  # 자식 PowerShell 로 띄운다. 여기서도 stderr 를 PowerShell 스트림으로 끌어오지 않는다.
-  & cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $REPO 'scripts\serve_models.ps1')`" >nul 2>&1"
-  if ($LASTEXITCODE -ne 0) {
+  # 이미 떠 있으면 기동하지 않는다. serve_models.ps1 은 포트가 점유돼 있으면
+  # (타 프로세스 오사살 방지를 위해) 의도적으로 실패하므로, 그 정상 상황을
+  # setup 실패로 오인하지 않도록 여기서 먼저 걸러낸다.
+  $already = $true
+  foreach ($p in @(8090, 8091)) {
+    if (-not (Get-NetTCPConnection -LocalPort $p -State Listen -EA SilentlyContinue)) { $already = $false }
+  }
+  if ($already) {
+    Ok "chat 8090 / embed 8091 이 이미 떠 있음 — 기동 생략하고 응답만 검증"
+  } else {
+    Info "서버 기동 스모크 (chat 8090 + embed 8091) — 20초 내외"
+    # 자식 PowerShell 로 띄운다. 여기서도 stderr 를 PowerShell 스트림으로 끌어오지 않는다.
+    & cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $REPO 'scripts\serve_models.ps1')`" >nul 2>&1"
+  }
+  if (-not $already -and $LASTEXITCODE -ne 0) {
     Die "7-자가검증" "서버 기동에 실패했습니다." @(
       "logs\chat-*.err.log 와 logs\embed-*.err.log 를 확인하세요.",
       "VRAM 부족이면 spec\paths.md 의 NGL_CHAT 을 28 또는 0 으로 낮추고 다시 실행하세요.",
       "다른 llama-server 가 8090/8091 을 쓰고 있으면 먼저 종료하세요."
     )
   }
-  Ok "chat 8090 / embed 8091 기동"
+  if (-not $already) { Ok "chat 8090 / embed 8091 기동" }
 
   # /v1/models
   foreach ($p in @(8090, 8091)) {

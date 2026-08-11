@@ -122,7 +122,12 @@ powershell -ExecutionPolicy Bypass -File setup.ps1
 > 워크스페이스를 나눠도 **설정값은 아래대로 똑같이** 넣으면 된다.
 
 1. 새 워크스페이스를 만든다 — 이름 `kdocs` (아무 이름이나 가능)
-2. 워크스페이스 **⚙ Settings → Chat Settings** 에서:
+2. **문서를 넣기 전에** 워크스페이스 **⚙ Settings → Chat Settings** 부터 손본다.
+
+> ⚠ **Chat mode 를 먼저 `Query` 로 바꿀 것.** 새 워크스페이스 기본값은 `Automatic` 인데,
+> 이 상태로 질문하면 검색 대신 **에이전트 루프로 빠져 답이 안 나온다**
+> (`@agent: Swapping over to agent chat…` 만 뜨고 인용 0개 — 실측 2회).
+> `Chat History` 를 2 로 바꾸는 것도 문서 투입 전에 함께 끝내 둔다.
 
 | 항목 | 값 | 이유 |
 |---|---|---|
@@ -201,9 +206,31 @@ powershell -ExecutionPolicy Bypass -File scripts\register_task.ps1
 
 ### 4-3. AnythingLLM 에 업로드
 
+> ⚠ **업로드 전에 `Start-LocalRAG.bat` 으로 서버를 먼저 띄울 것.**
+> 임베딩은 **8091 포트의 임베딩 서버**가 하는 일이다. 서버가 없으면 `Save and Embed` 가
+> **조용히 실패**해서, 문서가 올라간 것처럼 보이는데 검색이 안 되는 상태가 된다.
+
 워크스페이스 → **Upload a document** → `office-md\*.md` 를 드래그앤드롭 → **Save and Embed**
 
 문서 수만큼 임베딩이 돌고 끝나면 질의할 수 있다.
+
+**끝난 뒤 반드시 확인**: 워크스페이스 문서 관리 화면에서 넣은 파일이 **워크스페이스 쪽 목록에
+실제로 들어가 있는지** 본다. 업로드(파일 보관)와 임베딩(워크스페이스 편입)은 별개 단계다.
+
+> ⚠ **"임베딩된 파일 목록 알려줘" 같은 메타 질문은 동작하지 않는다.**
+> 채팅은 검색된 문서 조각만 볼 수 있고 워크스페이스 파일 목록을 알지 못한다.
+> 그럴듯한 목록을 지어내거나 "확인되지 않습니다"라고 답한다.
+> **목록은 반드시 문서 관리 화면에서 눈으로 확인한다.**
+
+#### 같은 파일을 다시 올릴 때
+
+AnythingLLM 은 업로드한 파일을 내부 캐시(`custom-documents`)에 쌓아두는데,
+**같은 이름의 구판이 그대로 남는다.** 목록에서 이름만 보고 고르면 예전 내용이 들어갈 수 있다.
+
+- 파일을 고칠 때는 **워크스페이스에서 기존 문서를 먼저 제거**하고 새로 올린다.
+- 이름이 같은 항목이 여러 개 보이면 **업로드 시각이 가장 최근인 것**을 고른다.
+- 실측 사례: 재업로드 때 예전 판본(front-matter 포함, 1,509자)이 선택돼
+  최신 판본(1,340자)으로 교체해야 했다.
 
 ---
 
@@ -266,7 +293,9 @@ powershell -ExecutionPolicy Bypass -File scripts\register_task.ps1
 | **포트 충돌** (8090/8091 이미 사용 중) | `powershell -ExecutionPolicy Bypass -File scripts\stop_models.ps1` 로 정리 후 다시 기동. **`taskkill /im llama-server.exe` 는 쓰지 말 것** — 다른 프로그램의 인스턴스까지 죽는다 |
 | 서버 기동 실패 / VRAM 부족 | `spec\paths.md` 의 `NGL_CHAT` 을 `28` → `0` 으로, 그래도 안 되면 `CTX_CHAT` 을 `4096` → `3072` 로 낮춘다. 로그: `logs\chat-*.err.log` |
 | AnythingLLM 이 모델을 못 찾음 | `Start-LocalRAG.bat` 으로 서버가 떠 있는지 확인. 브라우저에서 `http://127.0.0.1:8090/v1/models` 가 `qwen3-4b` 를 반환해야 정상 |
-| 답변이 "정보가 없다"만 반복 | 위 **질의 요령 ②** — New Thread 를 열고 다시 물어본다. Chat History 가 2 인지도 확인 |
+| 답변이 "정보가 없다"만 반복 | **① 먼저 워크스페이스 문서 목록을 눈으로 확인한다** (해당 문서가 실제로 임베딩돼 있는가). ② New Thread 를 열고 다시 물어본다. ③ Chat History 가 2 인지 확인 |
+| 질문에 답 대신 `@agent: Swapping over to agent chat…` | Chat mode 가 `Automatic` 이다. **`Query` 로 바꾼다** (3-5) |
+| 업로드했는데 검색이 안 됨 | 임베딩 시점에 **8091 서버가 떠 있었는지** 확인. 없으면 조용히 실패한다 — 서버를 띄우고 문서를 제거 후 다시 올린다 |
 | 답이 느림 | GPU 없이 CPU 로 돌면 느리다. `spec\paths.md` 의 `NGL_CHAT` 이 `0` 이면 GPU 미사용 상태다 |
 
 ---
