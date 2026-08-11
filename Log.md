@@ -707,3 +707,36 @@ bge-m3 `aa473d51…a173` (634,553,760 B) / llama.cpp b10298 CUDA·Vulkan zip 크
 
 다른 PC 에서의 setup.ps1(**베타테스트가 첫 검증**) / Vulkan 분기 미실행 /
 모델 실제 다운로드·이어받기 경로(기존 파일 복사로 단축)
+
+---
+
+## 2026-08-11 (2차) — VRAM 기반 ctx 자동 프로파일
+
+### 작업 내역
+
+1. `setup.ps1` 3단계에서 **nvidia-smi 로 VRAM 총량을 파싱**해 `CTX_CHAT` 자동 산정
+   (6GB 미만 6144 / 6GB 이상 16384 / GPU 없음 4096). 산정 근거를 주석으로 기재 —
+   모델 2,381 MiB + **약 0.115 MiB/토큰** (4096↔6144 실측 차이에서 역산).
+2. `serve_models.ps1` — paths.md 의 `CTX_CHAT` 을 읽는 동작은 이미 있었고,
+   파라미터 설명만 새 프로파일에 맞게 갱신. `-CtxChat` 오버라이드 유지.
+3. `QUICKSTART.md` — LLM Provider 표에 **Token context window / Max Tokens** 행 추가
+   ("`CTX_CHAT` 과 같은 값"), VRAM별 값 표, **긴 문서 통짜 요약 경고** 추가.
+   질의 요령 ①에도 "요약 요청은 피하고 조회형으로" 명시.
+4. paths.md 에 VRAM 행과 ctx 산정 안내, OOM 시 낮추는 순서 기재.
+
+### 회귀 (RTX 2050 4GB)
+
+paths.md 삭제 후 `setup.ps1` 재실행 → **exit 0 / 27.8초**
+
+| 확인 항목 | 결과 |
+|---|---|
+| CTX_CHAT 자동 산정 | `VRAM 4096 MiB (6GB 미만) → 6144` — **기존 값 유지** |
+| 실제 기동 ctx | 명령행 `-c 6144`, `/v1/models` `n_ctx=6144` |
+| VRAM | 3,082 MiB used / 884 free (기존 실측과 동일) |
+| 스모크 | 한국어 chat 정상, GV-4 PASS(1024차원), GV-1 PASS |
+
+### 미검증
+
+**6GB/8GB 카드에서 ctx 16384 가 실제로 뜨는지** — 추정 4.3GB 소요로 계산했을 뿐
+해당 하드웨어가 없어 실행하지 못했다. 동료의 RTX 4060(8GB)이 첫 검증이 된다.
+OOM 시 낮추는 순서를 paths.md·QUICKSTART·serve_models 도움말 세 곳에 안내했다.

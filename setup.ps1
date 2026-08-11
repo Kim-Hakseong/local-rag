@@ -217,12 +217,17 @@ if ($kordocCmd -and (Test-Path $kordocCmd)) {
 # ═══ 3. GPU 감지 ═════════════════════════════════════════════════════════
 Step "GPU 감지 (런타임 종류 결정)"
 
-$gpuKind = "none"; $gpuName = ""
+$gpuKind = "none"; $gpuName = ""; $vramMiB = 0
 $smi = "$env:SystemRoot\System32\nvidia-smi.exe"
 if (Test-Path $smi) {
   try {
-    $q = & $smi --query-gpu=name,memory.total --format=csv,noheader 2>$null
-    if ($LASTEXITCODE -eq 0 -and $q) { $gpuKind = "cuda"; $gpuName = ($q | Select-Object -First 1).Trim() }
+    $q = & cmd /c "`"$smi`" --query-gpu=name,memory.total --format=csv,noheader 2>nul"
+    $first = ($q | Where-Object { $_ } | Select-Object -First 1)
+    if ($first) {
+      $gpuKind = "cuda"; $gpuName = $first.Trim()
+      # "NVIDIA GeForce RTX 2050, 4096 MiB" 형태에서 총 VRAM 을 뽑는다
+      if ($gpuName -match "(\d+)\s*MiB") { $vramMiB = [int]$Matches[1] }
+    }
   } catch { }
 }
 if ($gpuKind -eq "none") {
@@ -235,6 +240,45 @@ if ($gpuKind -eq "none") {
   Ok "NVIDIA 검출 → CUDA 빌드 사용 — $gpuName"
 }
 $nglDefault = if ($gpuKind -eq "cuda") { 99 } else { 99 }   # Vulkan 도 일단 99 시도, 실패 시 폴백 안내
+
+<#
+  ── CTX_CHAT 자동 프로파일 (VRAM 기반) ────────────────────────────────────
+
+  산정 근거 (RTX 2050 4GB 실측에서 뽑은 계수):
+
+    모델 가중치 (Qwen3-4B Q4_K_M)      약 2,381 MiB — ctx 와 무관한 고정값
+    KV 캐시 + 연산 버퍼 (--cache-type-k/v q8_0)
+        ctx 4096 → 전체 2,851 MiB  ⇒ 모델 외 약  470 MiB
+        ctx 6144 → 전체 3,086 MiB  ⇒ 모델 외 약  705 MiB
+        차이 235 MiB / 2,048 토큰  ⇒ **약 0.115 MiB/토큰**
+
+  이 계수로 추정한 전체 VRAM 소요:
+
+    ctx  4096 →  2,381 + 470   ≈ 2.9 GB
+    ctx  6144 →  2,381 + 705   ≈ 3.1 GB   ← 4GB 카드의 실용 상한
+    ctx 16384 →  2,381 + 1,880 ≈ 4.3 GB   ← 6GB 이상에서만 안전
+
+  그래서:
+    - VRAM 6GB 미만  → 6144  (4GB 카드에서 실측 통과한 값. 여유 약 0.9GB)
+    - VRAM 6GB 이상  → 16384 (4.3GB 소요 + 여유. 긴 문서·다중 청크에 유리)
+    - GPU 없음(CPU)  → 4096  (RAM 은 넉넉하나 ctx 가 클수록 프롬프트 평가가
+                              선형으로 느려진다. CPU 에서는 응답성이 우선)
+
+  추정이므로 여유를 크게 잡았다. 기동이 OOM 으로 실패하면
+  spec\paths.md 의 CTX_CHAT 을 한 단계 낮추고(16384 → 6144 → 4096 → 3072)
+  그래도 안 되면 NGL_CHAT 을 28 → 0 으로 내린다.
+#>
+if ($gpuKind -eq "cuda" -and $vramMiB -ge 6144) {
+  $ctxDefault = 16384
+  Ok "VRAM $vramMiB MiB (6GB 이상) → CTX_CHAT $ctxDefault"
+} elseif ($gpuKind -eq "cuda") {
+  $ctxDefault = 6144
+  $vramLabel = if ($vramMiB -gt 0) { "$vramMiB MiB" } else { "총량 미확인" }
+  Ok "VRAM $vramLabel (6GB 미만) → CTX_CHAT $ctxDefault"
+} else {
+  $ctxDefault = 4096
+  Ok "NVIDIA GPU 없음 → CTX_CHAT $ctxDefault (CPU 응답성 우선)"
+}
 
 # ═══ 4. 런타임 전개 ══════════════════════════════════════════════════════
 Step "llama.cpp 런타임 전개 ($LLAMA_TAG / $gpuKind)"
@@ -289,7 +333,6 @@ Step "spec\paths.md 생성"
 New-Item -ItemType Directory -Force $SPEC | Out-Null
 $pathsFile = Join-Path $SPEC "paths.md"
 
-$ctxDefault = 6144
 $lines = @(
   "# spec/paths.md — setup.ps1 이 생성 ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))"
   ""
@@ -313,11 +356,17 @@ $lines = @(
   "| 항목 | 값 |"
   "|---|---|"
   "| GPU | $gpuName |"
+  "| VRAM | $(if ($vramMiB -gt 0) { "$vramMiB MiB" } else { '미확인 (NVIDIA 아님 또는 조회 실패)' }) |"
   "| 런타임 | llama.cpp $LLAMA_TAG ($gpuKind 빌드) |"
   "| Node | $nodeV |"
   ""
-  "VRAM 부족으로 기동이 실패하면 ``NGL_CHAT`` → ``CTX_CHAT`` 순으로 낮춘다"
-  "(``99`` → ``28`` → ``0``, ``6144`` → ``4096`` → ``3072``)."
+  "``CTX_CHAT`` 은 VRAM 총량으로 자동 산정했다 (6GB 미만 → 6144 / 6GB 이상 → 16384 / GPU 없음 → 4096)."
+  "산정 근거는 setup.ps1 의 3단계 주석 참조 — 모델 2,381 MiB + 약 0.115 MiB/토큰(KV q8_0) 실측 계수."
+  ""
+  "**AnythingLLM 의 Token context window 에도 이 ``CTX_CHAT`` 값을 그대로 넣을 것.**"
+  ""
+  "기동이 OOM 으로 실패하면 ``CTX_CHAT`` 을 한 단계 낮추고(16384 → 6144 → 4096 → 3072),"
+  "그래도 안 되면 ``NGL_CHAT`` 을 ``28`` → ``0`` 으로 내린다."
 )
 
 if (Test-Path $pathsFile) {

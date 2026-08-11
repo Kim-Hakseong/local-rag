@@ -71,8 +71,26 @@ powershell -ExecutionPolicy Bypass -File setup.ps1
 | Provider | **Generic OpenAI** |
 | Base URL | `http://127.0.0.1:8090/v1` |
 | Chat Model Name | `qwen3-4b` |
-| Token context window | `6144` |
+| **Token context window** | **`spec\paths.md` 의 `CTX_CHAT` 과 같은 값** |
+| **Max Tokens (Token Limit)** | **`spec\paths.md` 의 `CTX_CHAT` 과 같은 값** |
 | API Key | 아무 문자열 (예: `sk-local`) — 로컬 서버는 검사하지 않는다 |
+
+`CTX_CHAT` 은 `setup.ps1` 이 **GPU VRAM 총량을 보고 자동으로 정한다.**
+
+| VRAM | `CTX_CHAT` |
+|---|---|
+| 6GB 미만 (예: RTX 2050 4GB) | `6144` |
+| 6GB 이상 (예: RTX 4060 8GB) | `16384` |
+| NVIDIA GPU 없음 (CPU) | `4096` |
+
+설치가 끝난 뒤 `spec\paths.md` 를 열어 실제 값을 확인하고 그 숫자를 넣으면 된다.
+**서버보다 큰 값을 넣으면 긴 대화에서 잘리거나 오류가 난다.** 반드시 같은 값으로 맞출 것.
+
+> ⚠ **ctx 가 크다고 긴 문서를 통째로 요약시키지 말 것.**
+> "이 문서 전체를 요약해줘" 같은 요청은 ① 느리고(토큰 수만큼 선형으로 증가)
+> ② 4B 모델에서는 앞부분에 치우친 부실한 요약이 나오기 쉽다.
+> 이 시스템은 **"어디에 무엇이 적혀 있는지 찾아 답하는" 조회형 질문에 맞춰져 있다.**
+> ctx 를 키운 목적은 요약이 아니라 **검색된 청크 여러 개와 대화 맥락을 함께 담기 위한 것**이다.
 
 ### 3-2. Embedder (`Settings → AI Providers → Embedder`)
 
@@ -157,12 +175,14 @@ powershell -ExecutionPolicy Bypass -File scripts\register_task.ps1
 
 이 3가지만 지키면 정답률이 확 올라간다. 전부 실측 근거가 있다 (`EVAL.md` 부록 D).
 
-### ① 문서에 있는 표현을 그대로 쓴다
+### ① 문서에 있는 표현을 그대로 쓴다 (조회형으로 묻는다)
 
 검색은 의미 유사도로 하지만, **고유명사·번호·항목명을 그대로 넣을수록** 정확해진다.
 
 - 좋음: `EQ-0219 장비의 차기 교정일과 상태는?`
 - 나쁨: `그 온도 챔버 언제 다시 점검해야 해?`
+- **피할 것**: `이 문서 전체를 요약해줘` — 느리고, 4B 모델에서는 앞부분에 치우친 요약이 나온다.
+  이 시스템의 강점은 **요약이 아니라 조회**다.
 
 ### ② 대화가 길어지면 **New Thread** 를 연다
 

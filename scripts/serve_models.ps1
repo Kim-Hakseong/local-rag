@@ -19,7 +19,9 @@
   chat 인스턴스의 -ngl 값. 기본 99 (DESIGN.md §4 기본안). OOM 폴백 시 28 / 0 순으로 조정.
 
 .PARAMETER CtxChat
-  chat 인스턴스의 -c 값. 기본 6144 (튜닝 실험 후 상향, VRAM 3,086 MiB). OOM 시 4096 → 3072.
+  chat 인스턴스의 -c 값. 미지정 시 spec\paths.md 의 CTX_CHAT 을 쓴다
+  (setup.ps1 이 VRAM 총량으로 산정: 6GB 미만 6144 / 6GB 이상 16384 / GPU 없음 4096).
+  OOM 시 한 단계씩 낮춘다: 16384 → 6144 → 4096 → 3072.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\serve_models.ps1
