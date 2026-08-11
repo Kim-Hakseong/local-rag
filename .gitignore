@@ -1,0 +1,25 @@
+# ── 실데이터 (절대 커밋 금지) ──────────────────────────────
+office-inbox/
+office-md/
+samples/*
+!samples/.gitkeep
+logs/
+
+# ── 개인 환경 경로 (setup.ps1 이 생성) ─────────────────────
+# 사용자명·설치 위치가 들어가므로 커밋하지 않는다.
+# 템플릿은 spec/paths.example.md 를 참고할 것.
+spec/paths.md
+
+# ── 대용량 자산 (setup.ps1 이 내려받음) ────────────────────
+runtime/
+models/
+*.gguf
+
+# ── 파생·임시 ──────────────────────────────────────────────
+# GV-3 픽스처 — samples\ 실물 문서에서 파생한 바이너리.
+# 생성 방법은 scripts/make_gv3_fixture.mjs 에 있으므로 재현 가능하다.
+scripts/gv3/
+__pycache__/
+*.pyc
+.venv/
+node_modules/
