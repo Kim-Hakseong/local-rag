@@ -663,3 +663,47 @@ rerank 가 1/3 에 그친 이유 / 확정 조합에서 ctx 4096 으로도 되는
 
 세 서비스(8090 / 8091 / 3001) 정상 구동. 튜닝 확정 설정 적용 상태.
 **DECISIONS 56건.** 다음 지시 대기.
+
+---
+
+## 2026-08-11 — M6 퍼블릭 배포
+
+### 목표
+
+동료(RTX 4060 노트북)가 **클론 → setup.ps1 → Start 더블클릭** 3단계로 베타테스트.
+
+### 작업 내역
+
+1. **사전 감사** — 개인 경로 32건을 `<USER>`/`<REPO>` 로 치환(이력 문서는 보존).
+   토큰·키 실제 시크릿 0건. `.gitignore` 재작성(**`spec/paths.md`**, `__pycache__` 추가).
+2. **LICENSE**(MIT, Kim-Hakseong) + README 서드파티 고지(kordoc/llama.cpp/AnythingLLM/모델).
+3. **`setup.ps1`** 신규 — 7단계 원클릭 구축. 진행률·이어받기·해시대조·자가검증 포함.
+4. **`QUICKSTART.md`** 신규 — 10분 가이드(AnythingLLM 설정값 표, 질의 3수칙, 문제해결).
+5. **경로 통일** — `serve_models.ps1` 이 paths.md 의 NGL/CTX/alias 를 읽도록 변경.
+6. **클론 실증** → 1차 실패 → 수정 → **재실증 통과(exit 0)**.
+7. **배포** — `Kim-Hakseong/local-rag` 퍼블릭, `v0.1.0-beta` prerelease.
+
+### 발견·수정한 문제 1건
+
+| 문제 | 원인 | 조치 |
+|---|---|---|
+| `setup.ps1` 7단계에서 exit 1 | **PS 5.1 네이티브 stderr 함정** — llama-server 가 버전을 stderr 로 내는데 `2>&1` 로 받으면 `NativeCommandError` 발생, `ErrorActionPreference=Stop` 과 만나 중단. **exe 종료코드는 0 이었다** | 해당 호출들을 `cmd /c` 로 감싸 회피 |
+
+> 클론 실증을 안 했으면 **동료 PC 에서 100% 실패했을 문제**다. 내 PC 에서는 이미 환경이
+> 갖춰져 있어 드러나지 않았다.
+
+### 확정 상수 (setup.ps1)
+
+Qwen `3605803b…e597` (2,497,281,120 B, unsloth 배포본 — 공식 Qwen 계정은 GGUF 미배포/401) /
+bge-m3 `aa473d51…a173` (634,553,760 B) / llama.cpp b10298 CUDA·Vulkan zip 크기.
+
+### 결과
+
+- 저장소: https://github.com/Kim-Hakseong/local-rag (PUBLIC, MIT, 35 파일)
+- 릴리스: https://github.com/Kim-Hakseong/local-rag/releases/tag/v0.1.0-beta
+- 실데이터·개인경로 유출 **0건** (원격 트리 재조회로 확인)
+
+### 미검증
+
+다른 PC 에서의 setup.ps1(**베타테스트가 첫 검증**) / Vulkan 분기 미실행 /
+모델 실제 다운로드·이어받기 경로(기존 파일 복사로 단축)

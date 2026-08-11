@@ -1085,3 +1085,92 @@
 - **꺼낼 조건** (둘 중 하나가 관측될 때):
   1. 문서 수가 늘어 **정답 행이 실제로 topN 밖으로 밀리는** 사례 — 지금은 1~2위였다.
   2. 표 하나가 512자 청크 여러 개로 쪼개져 **행이 중간에서 잘리는** 사례.
+
+## [M6] 퍼블릭 배포 — 2026-08-11
+
+- 결정: 동료 베타테스트를 위해 GitHub 퍼블릭 저장소로 배포한다.
+  저장소명은 제안대로 **`local-rag`** (Kim-Hakseong/local-rag), 릴리스 `v0.1.0-beta` (prerelease).
+- 설치 3단계 목표 달성: `git clone` → `setup.ps1` → `Start-LocalRAG.bat`.
+
+### 사전 감사
+
+- 개인 경로를 플레이스홀더로 치환: `C:\Users\USER` → `<USER>`, 저장소 경로 → `<REPO>`.
+  **DECISIONS/Log/EVAL 은 히스토리 가치가 있어 삭제하지 않고 경로만 치환**했다 (5개 파일, 32건).
+- 토큰·키 스캔: 실제 시크릿 없음. `sk-local-kdocrag` 는 로컬 서버용 더미 문자열(키 검사 안 함).
+- `.gitignore` 재작성 — **`spec/paths.md` 추가**(개인 경로 포함), `__pycache__/`, `*.pyc` 추가.
+  기존 `office-inbox/`·`office-md/`·`samples/*`·`logs/`·`runtime/`·`models/`·`scripts/gv3/` 유지.
+- `git status` 로 실제 추적 대상 **35개 파일**을 확인해 실데이터 0건 검증.
+  푸시 후 원격 트리를 다시 조회해 재확인했다.
+
+### 신규 산출물
+
+| 파일 | 내용 |
+|---|---|
+| `setup.ps1` | 7단계 원클릭 구축 (전제점검 → kordoc → GPU감지 → 런타임 → 모델+sha256 → paths.md → 자가검증) |
+| `QUICKSTART.md` | 동료용 10분 가이드 (설정값 표, 질의 3수칙, 문제해결) |
+| `LICENSE` | MIT, Copyright (c) 2026 Kim-Hakseong |
+| `spec/paths.example.md` | paths.md 템플릿 (실제 파일은 gitignore) |
+
+### 모델 출처 확정 — 공식 Qwen 계정은 GGUF 를 배포하지 않는다
+
+`Qwen/Qwen3-4B-Instruct-2507-GGUF` 는 **HTTP 401**(부재 또는 게이팅). 대신
+`unsloth/Qwen3-4B-Instruct-2507-GGUF` (apache-2.0, 게이팅 없음, base_model 이 공식 Qwen)를 쓴다.
+
+**결정적 근거**: 이 저장소의 sha256 이
+`3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597` 로,
+본 프로젝트가 M2~M6 내내 검증에 사용한 파일과 **정확히 일치**한다. 즉 새로 다운로드해
+해시를 산출할 필요 없이 기존 검증 자산의 해시를 그대로 상수로 박을 수 있었다.
+
+setup.ps1 에 박은 상수:
+
+| 자산 | 크기(B) | sha256 |
+|---|---|---|
+| Qwen3-4B-Instruct-2507-Q4_K_M.gguf | 2,497,281,120 | `3605803b…e597` |
+| bge-m3-q8_0.gguf | 634,553,760 | `aa473d51…a173` |
+| llama-b10298-bin-win-cuda-12.4-x64.zip | 250,457,449 | (크기만 검증) |
+| cudart-llama-bin-win-cuda-12.4-x64.zip | 391,443,627 | (크기만 검증) |
+| llama-b10298-bin-win-vulkan-x64.zip | 34,108,466 | (크기만 검증) |
+
+GitHub 릴리스는 자산 해시를 제공하지 않아 zip 은 **크기 대조만** 한다. 모델은 HF LFS OID 로 sha256 대조.
+
+### 경로 통일
+
+- `serve_models.ps1` 의 `-NglChat`/`-CtxChat` 기본값을 **paths.md 의 `NGL_CHAT`/`CTX_CHAT` 에서 읽도록** 변경
+  (명시 인자가 있으면 그쪽 우선 — 폴백 실험용). alias 도 `CHAT_MODEL_ID`/`EMBED_MODEL_ID` 에서 읽는다.
+- 스크립트·배치의 하드코딩 절대경로 **잔재 0건** 확인.
+
+### 클론 실증 — 1차 실패 → 원인 규명 → 재실증 통과
+
+임시 폴더에 새로 클론해 `setup.ps1` 을 돌렸다. 모델은 기존 파일을 복사해 다운로드 시간만
+단축했고 **해시 검증 경로는 그대로 통과**시켰다.
+
+**1차 실패 (exit 1, 7단계)**: `llama-server --version` 에서 죽었다.
+원인은 **PowerShell 5.1 의 네이티브 stderr 리다이렉션 함정** —
+llama-server 는 버전을 stderr 로 내는데, `& $exe --version 2>&1` 로 받으면 각 줄이
+`ErrorRecord` 로 감싸여 `NativeCommandError` 가 되고 `$ErrorActionPreference='Stop'` 과 만나
+스크립트가 중단된다. **exe 종료코드는 0 이었는데도** 실패로 처리된 것이다.
+
+수정: llama-server 버전 확인 / 서버 기동 / GV-1 / Python 검출을 **`cmd /c` 로 감싸** 회피.
+(`register_task.ps1` 의 `2>&1` 은 cmd 명령행 문자열 안이라 안전 — 점검 완료.)
+
+**재실증 통과**: `SETUP COMPLETE`, **종료코드 0**, 소요 25.6초(런타임·모델 기보유 상태).
+1차 실행에서 다운로드 포함 전 과정은 325.3초였다.
+
+### 릴리스
+
+`v0.1.0-beta` (prerelease). GitHub 이 소스 zip 을 자동 제공한다(HTTP 200 확인).
+릴리스 노트에 설치 3단계 / 핵심 성능(7/7, 30.05 tok/s) / **알려진 제약 3건**
+(구버전 HWP 미검증, 업로드 반자동, 4B 생성 한계) 명시.
+
+### 범위 제외 (지시대로 구현하지 않음)
+
+AnythingLLM 설치·설정 자동화(QUICKSTART 표로 대체) / 자동 임베딩(폴더감시→API) /
+다국어 README·CI·테스트 자동화.
+
+### 미검증
+
+- **다른 PC 에서의 setup.ps1** — 같은 노트북에서만 실증했다. 동료의 RTX 4060 노트북에서
+  CUDA 빌드 감지·기동이 실제로 되는지는 **베타테스트가 첫 검증**이다.
+- **Vulkan 경로** — NVIDIA 가 감지돼 CUDA 분기만 탔다. Vulkan 분기는 코드 경로만 있고 미실행.
+- 모델을 **실제로 새로 다운로드하는 경로** — 기존 파일 복사로 단축했으므로
+  2.3GB 다운로드·이어받기 동작은 미검증(해시 검증 로직은 통과).
